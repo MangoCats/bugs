@@ -461,14 +461,15 @@ impl Simulation {
         };
 
         let weight = bug.current_state.weight.abs();
-        let ngenes = bug.brain.n_genes as i32;
-        let geneknee2 = GENE_KNEE * GENE_KNEE;
+        let ngenes = bug.brain.n_genes as i64;
+        let geneknee2 = GENE_KNEE as i64 * GENE_KNEE as i64;
 
         // Gene cost adds to effective mass (non-linear beyond GENE_KNEE)
-        let gene_cost = (GENE_COST * ngenes * ngenes * ngenes) / geneknee2;
-        let effective_mass = weight + gene_cost;
+        // Use i64 to avoid overflow with large gene counts
+        let gene_cost = ((GENE_COST as i64 * ngenes * ngenes * ngenes) / geneknee2) as i32;
+        let effective_mass = weight as i64 + gene_cost as i64;
 
-        (base_cost * effective_mass) / NOMMASS
+        ((base_cost as i64 * effective_mass) / NOMMASS as i64) as i32
     }
 
     /// Execute a bug action
@@ -541,7 +542,8 @@ impl Simulation {
         };
 
         // Limit food intake to EAT_LIMIT% of body weight
-        let max_intake = (weight * EAT_LIMIT) / 1024;
+        // Use i64 to avoid overflow with large weights
+        let max_intake = ((weight as i64 * EAT_LIMIT as i64) / 1024) as i32;
         let food_available = self.world.get_cell(pos).map(|c| c.food).unwrap_or(0);
 
         let actual_intake = food_available.min(max_intake);
@@ -679,26 +681,27 @@ impl Simulation {
             }
 
             // Calculate defender's effective mass based on facing and experience
-            let mut def_mass = def_weight;
-            let def_defends_i32 = def_defends as i32;
+            // Use i64 to avoid overflow with large masses
+            let mut def_mass = def_weight as i64;
+            let def_defends_i64 = def_defends as i64;
             match rel_facing {
                 0 => {
                     // Head on - advantage to defender
-                    def_mass = (def_mass * ((def_defends_i32 / 2) + 1)) / 128;
+                    def_mass = (def_mass * ((def_defends_i64 / 2) + 1)) / 128;
                 }
                 1 | -1 => {
                     // Oblique from front
-                    def_mass = (def_mass * ((def_defends_i32 / 4) + 1)) / 1024;
+                    def_mass = (def_mass * ((def_defends_i64 / 4) + 1)) / 1024;
                 }
                 2 | -2 => {
                     // Oblique from rear - advantage to attacker
-                    def_mass = (def_mass * ((def_defends_i32 / 8) + 1)) / 8192;
-                    def_mass -= kills as i32;
+                    def_mass = (def_mass * ((def_defends_i64 / 8) + 1)) / 8192;
+                    def_mass -= kills as i64;
                 }
                 3 => {
                     // From the rear - BIG advantage to attacker
                     def_mass /= 65536;
-                    def_mass -= (kills * kills) as i32;
+                    def_mass -= (kills as i64 * kills as i64);
                 }
                 _ => {}
             }
@@ -708,10 +711,11 @@ impl Simulation {
             }
 
             // Random roll to determine winner
-            let total = def_mass + (weight / 1024);
+            let def_mass_i32 = def_mass.min(i32::MAX as i64) as i32;
+            let total = def_mass_i32 + (weight / 1024);
             let roll = self.rng.gen_range(total as u32) as i32;
 
-            if roll > def_mass {
+            if roll > def_mass_i32 {
                 // Attacker wins!
                 if let Some(bug) = self.world.get_bug_mut(bug_id) {
                     bug.data.kills += 1;
