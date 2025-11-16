@@ -169,7 +169,7 @@ impl World {
         self.bugs.values().map(|b| b.current_state.weight as i64).sum()
     }
 
-    /// Get statistics
+    /// Get statistics (event counters should be set by simulation)
     pub fn stats(&self) -> WorldStats {
         let bug_count = self.bugs.len();
 
@@ -177,16 +177,25 @@ impl World {
             return WorldStats::default();
         }
 
+        let total_food = self.total_food();
         let total_mass = self.total_bug_mass();
         let total_genes: u32 = self.bugs.values().map(|b| b.brain.n_genes as u32).sum();
 
         WorldStats {
             tick: self.current_tick,
             bug_count,
-            total_food: self.total_food(),
+            total_food,
             total_bug_mass: total_mass,
             avg_bug_mass: total_mass / bug_count as i64,
             avg_genes: total_genes as f64 / bug_count as f64,
+            avg_food_per_cell: (total_food / (WORLD_X * WORLD_Y) as i64) as i32,
+
+            // Event counters initialized to 0, should be set by simulation
+            births: 0,
+            starvations: 0,
+            collisions: 0,
+            drownings: 0,
+            movements: 0,
         }
     }
 }
@@ -206,6 +215,14 @@ pub struct WorldStats {
     pub total_bug_mass: i64,
     pub avg_bug_mass: i64,
     pub avg_genes: f64,
+    pub avg_food_per_cell: i32,
+
+    // Event counters for this tick
+    pub births: u32,
+    pub starvations: u32,
+    pub collisions: u32,
+    pub drownings: u32,
+    pub movements: u32,
 }
 
 #[cfg(test)]

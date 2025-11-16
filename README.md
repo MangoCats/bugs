@@ -237,6 +237,25 @@ Core Features (✅ Complete):
 - ✅ Position history trails
 - ✅ Deterministic simulation with seedable RNG
 
+Visualization Features (✅ Complete):
+- ✅ **LEFTBAR (80px)**: Activity ratio visualization per row
+  - Color-coded action bars (eat=green, move=yellow, divide=cyan, etc.)
+  - Shows distribution of bug activities across the world
+- ✅ **Main World (1760×1000)**: Bug and environment maps
+  - Bug map: Ethnicity colors with position trails
+  - Environment map: Food (green), water (blue), bugs (red)
+- ✅ **BOTTOMBAR (80px)**: Scrollable time-series graphs
+  - Population count (white background bars)
+  - Average genes (gray line)
+  - Average food per cell (green line)
+  - Average bug mass (blue line)
+  - Movement rate (bright green)
+  - Deaths: starvation (dark green), drowning (purple), collision (red)
+  - Births (magenta)
+  - Interactive scrolling through 1300 ticks of history
+
+Total render size: **1840×1000 pixels** (main view) + **1840×80 pixels** (graph component)
+
 ## Verified Evolution
 
 The simulation has been tested and verified to support evolution:

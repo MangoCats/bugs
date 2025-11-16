@@ -2,6 +2,16 @@
 pub const WORLD_X: usize = 1760;
 pub const WORLD_Y: usize = 1000;
 
+// Visualization margins (from original bugs.c)
+pub const LEFTBAR: usize = 80;   // Left margin for activity visualization
+pub const RIGHTBAR: usize = 0;   // Right margin (unused in Rust version)
+pub const SIDEBAR: usize = LEFTBAR + RIGHTBAR;
+pub const BOTTOMBAR: usize = 80; // Bottom margin for graphs
+
+// Full render dimensions
+pub const RENDER_WIDTH: usize = WORLD_X + SIDEBAR;
+pub const RENDER_HEIGHT: usize = WORLD_Y; // BOTTOMBAR is separate component
+
 // Action indices
 pub const ACT_SLEEP: usize = 0;
 pub const ACT_EAT: usize = 1;

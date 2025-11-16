@@ -75,12 +75,15 @@ impl WebViewer {
     }
 
     #[wasm_bindgen]
-    pub fn get_stats(&self) -> JsValue {
+    pub fn get_stats(&self) -> String {
         if let Some(ref world) = self.world {
             let stats = world.stats();
-            serde_wasm_bindgen::to_value(&stats).unwrap_or(JsValue::NULL)
+            format!(
+                "{{\"tick\":{},\"bug_count\":{},\"avg_mass\":{},\"avg_genes\":{:.2}}}",
+                stats.tick, stats.bug_count, stats.avg_bug_mass, stats.avg_genes
+            )
         } else {
-            JsValue::NULL
+            String::from("{}")
         }
     }
 }

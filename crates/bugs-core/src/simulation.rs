@@ -41,6 +41,13 @@ pub struct Simulation {
 
     // Statistics
     pub stats_history: VecDeque<WorldStats>,
+
+    // Event counters for current tick
+    births_this_tick: u32,
+    starvations_this_tick: u32,
+    collisions_this_tick: u32,
+    drownings_this_tick: u32,
+    movements_this_tick: u32,
 }
 
 impl Simulation {
@@ -58,6 +65,11 @@ impl Simulation {
             age_div: 0,
             target_pop: POP_TARGET,
             stats_history: VecDeque::with_capacity(L_HIST),
+            births_this_tick: 0,
+            starvations_this_tick: 0,
+            collisions_this_tick: 0,
+            drownings_this_tick: 0,
+            movements_this_tick: 0,
         };
 
         sim.init_world();
@@ -180,6 +192,13 @@ impl Simulation {
     pub fn step(&mut self) -> bool {
         self.world.current_tick += 1;
 
+        // Reset event counters
+        self.births_this_tick = 0;
+        self.starvations_this_tick = 0;
+        self.collisions_this_tick = 0;
+        self.drownings_this_tick = 0;
+        self.movements_this_tick = 0;
+
         // Update dynamic parameters based on population and time
         self.update_dynamics();
 
@@ -189,8 +208,14 @@ impl Simulation {
         // Grow food
         self.grow_food();
 
-        // Record stats
-        let stats = self.world.stats();
+        // Record stats with event counts
+        let mut stats = self.world.stats();
+        stats.births = self.births_this_tick;
+        stats.starvations = self.starvations_this_tick;
+        stats.collisions = self.collisions_this_tick;
+        stats.drownings = self.drownings_this_tick;
+        stats.movements = self.movements_this_tick;
+
         if self.stats_history.len() >= L_HIST {
             self.stats_history.pop_front();
         }
@@ -303,6 +328,7 @@ impl Simulation {
                 // Check starvation
                 if bug.current_state.weight <= 0 {
                     dead_bugs.push(bug_id);
+                    self.starvations_this_tick += 1;
                 }
             }
         }
@@ -454,6 +480,7 @@ impl Simulation {
                 bug.data.moves += 1;
                 bug.current_state.action = ACT_MOVE;
                 bug.record_position();
+                self.movements_this_tick += 1;
             }
         }
     }
@@ -547,6 +574,7 @@ impl Simulation {
 
             let child_id = self.world.add_bug(child);
             offspring_ids.push(child_id);
+            self.births_this_tick += 1;
         }
 
         // Update parent
