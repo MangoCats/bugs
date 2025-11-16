@@ -48,7 +48,10 @@ Event-based recording system:
 Rendering abstraction supporting:
 - **Bug map** - ethnicity-based coloring with position trails
 - **Environment map** - food, water, and terrain visualization
+- **LEFTBAR (80px)** - row-by-row activity distribution with color-coded action bars
+- **BOTTOMBAR graphs** - scrollable time-series graphs (separate component)
 - **RGBA pixel buffer** output for flexibility
+- **Dual-component system** - Visualizer (main world) + GraphRenderer (time-series)
 
 ### bugs-cli
 
@@ -68,10 +71,14 @@ Native GUI viewer (wgpu + egui):
 
 ### bugs-viewer-web
 
-WebAssembly replay viewer:
+WebAssembly replay viewer with dual-canvas system:
+- **Main canvas (1840×1000)**: World view with LEFTBAR activity visualization
+- **Graph canvas (1840×80)**: Interactive, scrollable time-series graphs
+- **Interactive controls**: Navigate through 1300 ticks of history
+- **9 time-series metrics**: Population, genes, mass, food, births, deaths, movements
 - Load and view recorded simulations in browser
 - Share replay files easily
-- Canvas-based rendering
+- Canvas 2D rendering (no WebGL required)
 - Lightweight and portable
 
 ## Building
@@ -140,6 +147,18 @@ wasm-pack build --target web
 python3 -m http.server 8000
 # Open http://localhost:8000 in browser
 ```
+
+Controls:
+- **View Mode Toggle** - Switch between Bug Map and Environment visualization
+- **Graph Scrolling** - Navigate through simulation history:
+  - `◀◀ -100` - Jump back 100 ticks
+  - `◀ -10` - Step back 10 ticks
+  - `● Live` - Jump to latest data
+  - `+10 ▶` - Step forward 10 ticks
+  - `+100 ▶▶` - Jump forward 100 ticks
+- **Graph Offset Display** - Shows current position in history (0 = live view)
+- **Real-time Stats** - Population, mass, genes displayed below canvases
+- **Color-coded Legend** - Identifies all 9 time-series graph lines
 
 ## Performance Comparison
 
@@ -256,6 +275,30 @@ Visualization Features (✅ Complete):
 
 Total render size: **1840×1000 pixels** (main view) + **1840×80 pixels** (graph component)
 
+### Visualization Layout
+
+```
+Main Canvas (1840 × 1000):
+┌─────────┬──────────────────────────────────────┐
+│         │                                      │
+│ LEFT    │         WORLD VIEW                   │
+│ BAR     │         (1760 × 1000)                │
+│ (80px)  │                                      │
+│         │  Bug Map or Environment Map          │
+│ Activity│                                      │
+│ Bars    │                                      │
+│         │                                      │
+└─────────┴──────────────────────────────────────┘
+
+Graph Canvas (1840 × 80):
+┌──────────────────────────────────────────────────┐
+│  Time-Series Graphs (scrollable, 1300 tick history)│
+│  - Population (white bars)                       │
+│  - Avg genes, food, mass (colored lines)         │
+│  - Events: births, deaths, movements             │
+└──────────────────────────────────────────────────┘
+```
+
 ## Verified Evolution
 
 The simulation has been tested and verified to support evolution:
@@ -274,19 +317,22 @@ This Rust implementation maintains the core genetic programming logic from bugs.
 - **Performance**: Comparable or better than C version
 - **Extensibility**: Easy to add new features
 - **Portability**: Cross-platform (Linux, macOS, Windows, Web)
+- **Enhanced visualization**: BOTTOMBAR graphs are now separate and interactive (vs. static embedded in original)
+- **Dual-canvas system**: Allows independent scrolling through time-series data
+- **Web accessibility**: Full-featured WebAssembly viewer with graph controls
 
 ## Future Enhancements
 
 - [ ] Collision/fighting between bugs
-- [ ] Water/drowning mechanics
 - [ ] Enhanced terrain features
-- [ ] Statistics graphs and charts
 - [ ] Save/load simulation checkpoints
 - [ ] Export to video (MP4) directly
 - [ ] Parallel bug evaluation
-- [ ] WebGL rendering for web viewer
+- [ ] WebGL rendering for web viewer (currently using Canvas 2D)
 - [ ] Interactive genome inspector
 - [ ] Side-by-side comparison of runs
+- [ ] Graph zoom and pan capabilities
+- [ ] Export graph data to CSV/JSON
 
 ## License
 
