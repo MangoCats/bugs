@@ -9,6 +9,7 @@ pub struct Cell {
     pub food: i32,
     pub water: i32,
     pub terrain_height: i32,
+    pub nearest: i32,  // Distance to nearest bug (-1 if none)
 }
 
 impl Default for Cell {
@@ -17,6 +18,7 @@ impl Default for Cell {
             food: 0,
             water: 0,
             terrain_height: 0,
+            nearest: -1,
         }
     }
 }

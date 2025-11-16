@@ -1032,19 +1032,241 @@ impl Simulation {
     }
 
     /// Grow food in all cells
+    /// Calculate seasonal growth factor for a cell
+    /// Based on position and current time (creates moving seasonal zones)
+    fn growing_season(&self, x: usize, y: usize) -> i32 {
+        use std::f64::consts::PI;
+
+        // Seasonally adjusted X - creates sweeping seasonal zones
+        let sax = ((x as i32 + (self.world.current_tick * WORLD_X as i32) / SEASON_LENGTH) as usize) % WORLD_X;
+
+        // Food growth factor with cosine terrain
+        let fgf = 0.1 + self.food_hump *
+            ((PI * (sax as f64)) / (WORLD_X as f64)).sin() *
+            (0.51 - (PI * 6.0 * (y as f64) / (WORLD_Y as f64)).cos() * 0.5);
+
+        ((FOOD_GROW as f64 - 1024.0) * fgf + 1024.0) as i32
+    }
+
+    /// Grow food across the world
     fn grow_food(&mut self) {
+        // Rot values - food decay rates around bugs
+        const ROT: [i32; 4] = [
+            988,   // .966 @ 10, .342 @ 30 - Go easy on the bug itself
+            973,   // Heavier rot next door
+            1012,  // Very light farther on
+            1023,  // Just a bit less than stopgrowth out here
+        ];
+
+        // Update nearest bug distances
+        self.update_nearest();
+
+        // Flow water (terrain erosion and water movement)
+        self.flow_water();
+
+        // Grow food in each cell
+        for y in 0..WORLD_Y {
+            for x in 0..WORLD_X {
+                let pos = Pos::new(x as i32, y as i32);
+                let growth_factor = self.growing_season(x, y);
+
+                // Get nearest bug distance
+                let nearest = self.world.get_cell(pos).map(|c| c.nearest).unwrap_or(-1);
+
+                // Apply growth or decay
+                if let Some(cell) = self.world.get_cell_mut(pos) {
+                    if nearest == -1 || self.leak < nearest {
+                        // No bugs nearby - grow food
+                        cell.food = (cell.food * growth_factor) / 1024;
+                    } else if (nearest as usize) < ROT.len() {
+                        // Bug nearby - decay food
+                        cell.food = (cell.food * ROT[nearest as usize]) / 1024;
+                    }
+
+                    // Decay food above FOODCAP
+                    if cell.food > FOOD_CAP {
+                        let overage = cell.food - FOOD_CAP;
+                        cell.food -= (overage * FOOD_DECAY) / 1024;
+                    }
+
+                    // Hard limit at FOODCAP * 10
+                    if cell.food > FOOD_CAP * 10 {
+                        cell.food = FOOD_CAP * 10;
+                    }
+                }
+
+                // Spread food to adjacent cells with less than 1/16 of this cell
+                let current_food = self.world.get_cell(pos).map(|c| c.food).unwrap_or(0);
+
+                for dir in -2..=3 {
+                    let neighbor_pos = pos.step(dir);
+                    let neighbor_food = self.world.get_cell(neighbor_pos).map(|c| c.food).unwrap_or(0);
+                    let neighbor_nearest = self.world.get_cell(neighbor_pos).map(|c| c.nearest).unwrap_or(-1);
+
+                    if neighbor_food < current_food / 16 {
+                        // Only spread if no bugs nearby or leak allows it
+                        if neighbor_nearest == -1 || self.leak < neighbor_nearest {
+                            let transfer = (current_food * FOOD_SPREAD) / 1024;
+
+                            if let Some(cell) = self.world.get_cell_mut(pos) {
+                                cell.food -= transfer;
+                            }
+                            if let Some(neighbor_cell) = self.world.get_cell_mut(neighbor_pos) {
+                                neighbor_cell.food += transfer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Update nearest bug distances for all cells
+    fn update_nearest(&mut self) {
+        // Set 0 for cells with bugs, -1 for empty cells
         for x in 0..WORLD_X {
             for y in 0..WORLD_Y {
                 let pos = Pos::new(x as i32, y as i32);
-
-                // Don't grow food where bugs are (if leak is off)
-                if self.leak == 0 && self.world.get_bug_at(pos).is_some() {
-                    continue;
-                }
-
+                let has_bug = self.world.get_bug_at(pos).is_some();
                 if let Some(cell) = self.world.get_cell_mut(pos) {
-                    let growth = (FOOD_SPREAD as f64 * self.food_hump) as i32;
-                    cell.food = (cell.food + growth).min(FOOD_CAP);
+                    cell.nearest = if has_bug { 0 } else { -1 };
+                }
+            }
+        }
+
+        // Note: The C version has commented-out code for propagating distances
+        // We're keeping it simple for now - just 0 or -1
+    }
+
+    /// Flow water and erode terrain
+    fn flow_water(&mut self) {
+        // Repeat 4 times for lower viscosity
+        for _ in 0..4 {
+            for x in 0..WORLD_X {
+                for y in 0..WORLD_Y {
+                    let pos = Pos::new(x as i32, y as i32);
+
+                    // Random starting direction for Brownian flow
+                    let random_start = (self.rng.gen_range(6) as i8) - 2;
+
+                    // Check all 6 hexagonal directions
+                    for i in -2..=3 {
+                        let dir = random_start + i;
+                        let neighbor_pos = pos.step(dir);
+
+                        let (elev, water) = self.world.get_cell(pos)
+                            .map(|c| (c.terrain_height, c.water))
+                            .unwrap_or((0, 0));
+
+                        let (neighbor_elev, neighbor_water) = self.world.get_cell(neighbor_pos)
+                            .map(|c| (c.terrain_height, c.water))
+                            .unwrap_or((0, 0));
+
+                        // MAX_SLOPE erosion
+                        if neighbor_elev > elev + MAX_SLOPE {
+                            if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                cell.terrain_height -= 1;
+                            }
+                            if let Some(cell) = self.world.get_cell_mut(pos) {
+                                cell.terrain_height += 1;
+                            }
+                        }
+                        if elev > neighbor_elev + MAX_SLOPE {
+                            if let Some(cell) = self.world.get_cell_mut(pos) {
+                                cell.terrain_height -= 1;
+                            }
+                            if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                cell.terrain_height += 1;
+                            }
+                        }
+
+                        // Water flow equalization
+                        let total_water = water + neighbor_water;
+                        if total_water > 0 && (water + elev) != (neighbor_water + neighbor_elev) {
+                            let level = (water + elev + neighbor_water + neighbor_elev) / 2;
+
+                            if neighbor_elev < elev {
+                                // Flow into lower neighbor
+                                let new_neighbor_water = level - neighbor_elev;
+                                let new_water = total_water - new_neighbor_water;
+
+                                if new_neighbor_water > total_water {
+                                    // Drained completely
+                                    if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                        cell.water = total_water;
+                                        cell.terrain_height += 1; // Dry peak erosion
+                                    }
+                                    if let Some(cell) = self.world.get_cell_mut(pos) {
+                                        cell.water = 0;
+                                        cell.terrain_height -= 1;
+                                    }
+                                } else if new_neighbor_water < 0 {
+                                    if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                        cell.water = 0;
+                                    }
+                                    if let Some(cell) = self.world.get_cell_mut(pos) {
+                                        cell.water = total_water;
+                                    }
+                                } else {
+                                    // Normal flow
+                                    let flow = level - neighbor_elev - neighbor_water;
+                                    if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                        cell.water = new_neighbor_water;
+                                        // Fast flow erosion
+                                        if flow > 0 {
+                                            let erosion = flow / MAX_SLOPE;
+                                            cell.terrain_height += erosion;
+                                        }
+                                    }
+                                    if let Some(cell) = self.world.get_cell_mut(pos) {
+                                        cell.water = new_water;
+                                        if flow > 0 {
+                                            let erosion = flow / MAX_SLOPE;
+                                            cell.terrain_height -= erosion;
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Flow into current cell (reverse direction)
+                                let new_water = level - elev;
+                                let new_neighbor_water = total_water - new_water;
+
+                                if new_water > total_water {
+                                    if let Some(cell) = self.world.get_cell_mut(pos) {
+                                        cell.water = total_water;
+                                        cell.terrain_height += 1;
+                                    }
+                                    if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                        cell.water = 0;
+                                        cell.terrain_height -= 1;
+                                    }
+                                } else if new_water < 0 {
+                                    if let Some(cell) = self.world.get_cell_mut(pos) {
+                                        cell.water = 0;
+                                    }
+                                    if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                        cell.water = total_water;
+                                    }
+                                } else {
+                                    let flow = level - elev - water;
+                                    if let Some(cell) = self.world.get_cell_mut(pos) {
+                                        cell.water = new_water;
+                                        if flow > 0 {
+                                            let erosion = flow / MAX_SLOPE;
+                                            cell.terrain_height += erosion;
+                                        }
+                                    }
+                                    if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                        cell.water = new_neighbor_water;
+                                        if flow > 0 {
+                                            let erosion = flow / MAX_SLOPE;
+                                            cell.terrain_height -= erosion;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
