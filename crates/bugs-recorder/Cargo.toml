@@ -1,0 +1,12 @@
+[package]
+name = "bugs-recorder"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+bugs-core = { path = "../bugs-core" }
+serde.workspace = true
+bincode.workspace = true
+lz4 = "1.24"

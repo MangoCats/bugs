@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Bugs Viewer (Web)</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        #container {
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+        h1 {
+            margin-bottom: 20px;
+        }
+        #canvas {
+            border: 2px solid #444;
+            display: block;
+            margin: 20px 0;
+        }
+        #controls {
+            background: #2a2a2a;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        button {
+            background: #4CAF50;
+            border: none;
+            color: white;
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            border-radius: 3px;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        #stats {
+            background: #2a2a2a;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <h1>Bugs Evolution Viewer (WebAssembly)</h1>
+
+        <div id="controls">
+            <button id="bugMapBtn">Bug Map</button>
+            <button id="envMapBtn">Environment Map</button>
+        </div>
+
+        <canvas id="canvas"></canvas>
+
+        <div id="stats">
+            <div>Loading...</div>
+        </div>
+    </div>
+
+    <script type="module">
+        import init, { WebViewer } from './pkg/bugs_viewer_web.js';
+
+        async function run() {
+            await init();
+
+            const viewer = new WebViewer('canvas');
+
+            document.getElementById('bugMapBtn').addEventListener('click', () => {
+                viewer.set_mode(true);
+                viewer.render();
+            });
+
+            document.getElementById('envMapBtn').addEventListener('click', () => {
+                viewer.set_mode(false);
+                viewer.render();
+            });
+
+            // Initial render
+            viewer.render();
+
+            // Update stats
+            function updateStats() {
+                const stats = viewer.get_stats();
+                if (stats) {
+                    document.getElementById('stats').innerHTML = `
+                        <div>Tick: ${stats.tick}</div>
+                        <div>Bugs: ${stats.bug_count}</div>
+                        <div>Avg Mass: ${stats.avg_bug_mass}</div>
+                        <div>Avg Genes: ${stats.avg_genes.toFixed(2)}</div>
+                    `;
+                }
+            }
+
+            setInterval(updateStats, 100);
+        }
+
+        run();
+    </script>
+</body>
+</html>
