@@ -452,10 +452,23 @@ impl Simulation {
         senses
     }
 
-    /// Calculate energy cost based on mass
-    /// Costs are prorated according to COST * mass / NOMMASS
-    fn cost_calc(&self, base_cost: i32, mass: i32) -> i32 {
-        (base_cost * mass) / NOMMASS
+    /// Calculate energy cost based on mass and gene count
+    /// Costs are prorated according to COST * effective_mass / NOMMASS
+    /// effective_mass = abs(weight) + (GENECOST * ngenes^3) / (GENEKNEE^2)
+    fn cost_calc(&self, base_cost: i32, bug_id: u64) -> i32 {
+        let Some(bug) = self.world.get_bug(bug_id) else {
+            return 0;
+        };
+
+        let weight = bug.current_state.weight.abs();
+        let ngenes = bug.brain.n_genes as i32;
+        let geneknee2 = GENE_KNEE * GENE_KNEE;
+
+        // Gene cost adds to effective mass (non-linear beyond GENE_KNEE)
+        let gene_cost = (GENE_COST * ngenes * ngenes * ngenes) / geneknee2;
+        let effective_mass = weight + gene_cost;
+
+        (base_cost * effective_mass) / NOMMASS
     }
 
     /// Execute a bug action
@@ -482,7 +495,7 @@ impl Simulation {
         };
 
         // Calculate cost and max hydrate before borrowing
-        let cost = self.cost_calc(COST_SLEEP, weight);
+        let cost = self.cost_calc(COST_SLEEP, bug_id);
         let max_hydrate = weight / 1024;
 
         if let Some(bug) = self.world.get_bug_mut(bug_id) {
@@ -560,9 +573,8 @@ impl Simulation {
             bug.data.food_consumed += actual_intake;
         }
 
-        // Calculate cost based on new weight
-        let new_weight = self.world.get_bug(bug_id).map(|b| b.current_state.weight).unwrap_or(0);
-        let cost = self.cost_calc(COST_EAT, new_weight);
+        // Calculate cost based on new weight and genes
+        let cost = self.cost_calc(COST_EAT, bug_id);
 
         // Apply cost
         if let Some(bug) = self.world.get_bug_mut(bug_id) {
@@ -572,12 +584,12 @@ impl Simulation {
     }
 
     fn action_turn(&mut self, bug_id: u64, direction: i8) {
-        let (pos, weight) = {
+        let pos = {
             let bug = match self.world.get_bug(bug_id) {
                 Some(b) => b,
                 None => return,
             };
-            (bug.current_state.pos, bug.current_state.weight)
+            bug.current_state.pos
         };
 
         // Terrain manipulation - turning digs
@@ -592,7 +604,7 @@ impl Simulation {
         }
 
         // Calculate cost before borrowing
-        let cost = self.cost_calc(COST_TURN, weight);
+        let cost = self.cost_calc(COST_TURN, bug_id);
 
         // Update bug
         if let Some(bug) = self.world.get_bug_mut(bug_id) {
@@ -630,7 +642,7 @@ impl Simulation {
         let defender_id = self.world.bug_positions.get(&(new_pos.x, new_pos.y)).copied();
 
         // Pay for the move
-        let cost = self.cost_calc(COST_MOVE, weight);
+        let cost = self.cost_calc(COST_MOVE, bug_id);
         if let Some(bug) = self.world.get_bug_mut(bug_id) {
             bug.current_state.weight -= cost;
             if bug.current_state.weight < 0 {
@@ -715,9 +727,8 @@ impl Simulation {
 
                 // Move attacker in
                 if self.world.move_bug(bug_id, new_pos) {
-                    // Get weight before calculating cost
-                    let current_weight = self.world.get_bug(bug_id).map(|b| b.current_state.weight).unwrap_or(0);
-                    let fight_cost = self.cost_calc(COST_FIGHT, current_weight);
+                    // Calculate fight cost including gene penalty
+                    let fight_cost = self.cost_calc(COST_FIGHT, bug_id);
 
                     if let Some(bug) = self.world.get_bug_mut(bug_id) {
                         bug.current_state.weight -= fight_cost;
