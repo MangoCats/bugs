@@ -204,6 +204,9 @@ impl Simulation {
         // Process all bugs
         self.process_bugs();
 
+        // Check for drowning and starvation
+        self.check_deaths();
+
         // Grow food
         self.grow_food();
 
@@ -333,6 +336,48 @@ impl Simulation {
         }
 
         // Remove dead bugs
+        for bug_id in dead_bugs {
+            self.world.remove_bug(bug_id);
+        }
+    }
+
+    /// Check for drowning deaths
+    fn check_deaths(&mut self) {
+        let mut dead_bugs = Vec::new();
+
+        // Get all bug IDs
+        let bug_ids: Vec<u64> = self.world.bugs.keys().copied().collect();
+
+        for bug_id in bug_ids {
+            if let Some(bug) = self.world.get_bug(bug_id) {
+                let pos = bug.current_state.pos;
+
+                // Check if underwater
+                if let Some(cell) = self.world.get_cell(pos) {
+                    if cell.water > DROWN_DEPTH {
+                        // Bug is underwater
+                        let underwater = bug.data.underwater;
+                        if underwater >= DROWN_TIME {
+                            // Drown!
+                            dead_bugs.push(bug_id);
+                            self.drownings_this_tick += 1;
+                        } else {
+                            // Increment underwater counter
+                            if let Some(bug_mut) = self.world.get_bug_mut(bug_id) {
+                                bug_mut.data.underwater += 1;
+                            }
+                        }
+                    } else {
+                        // Not underwater, reset counter
+                        if let Some(bug_mut) = self.world.get_bug_mut(bug_id) {
+                            bug_mut.data.underwater = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Kill drowned bugs
         for bug_id in dead_bugs {
             self.world.remove_bug(bug_id);
         }
