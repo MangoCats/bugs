@@ -1,0 +1,26 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Recordings
+*.events
+*.snapshots
+
+# Build artifacts
+*.jpg
+*.png
+*.mp4
+*.m1v
+
+# OS
+.DS_Store
+Thumbs.db
