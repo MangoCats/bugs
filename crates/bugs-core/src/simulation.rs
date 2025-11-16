@@ -83,9 +83,8 @@ impl Simulation {
             for y in 0..WORLD_Y {
                 let pos = Pos::new(x as i32, y as i32);
                 if let Some(cell) = self.world.get_cell_mut(pos) {
-                    // Simple terrain - can be made more complex
                     cell.food = FOOD_START;
-                    cell.water = 0;
+                    cell.water = INIT_DEPTH;  // Initial water depth
                     cell.terrain_height = 0;
                 }
             }
@@ -408,6 +407,12 @@ impl Simulation {
         senses
     }
 
+    /// Calculate energy cost based on mass
+    /// Costs are prorated according to COST * mass / NOMMASS
+    fn cost_calc(&self, base_cost: i32, mass: i32) -> i32 {
+        (base_cost * mass) / NOMMASS
+    }
+
     /// Execute a bug action
     fn execute_action(&mut self, bug_id: u64, action: usize) {
         match action {
@@ -423,38 +428,131 @@ impl Simulation {
     }
 
     fn action_sleep(&mut self, bug_id: u64) {
+        let (pos, weight, current_hydrate) = {
+            let bug = match self.world.get_bug(bug_id) {
+                Some(b) => b,
+                None => return,
+            };
+            (bug.current_state.pos, bug.current_state.weight, bug.current_state.hydrate)
+        };
+
+        // Calculate cost and max hydrate before borrowing
+        let cost = self.cost_calc(COST_SLEEP, weight);
+        let max_hydrate = weight / 1024;
+
         if let Some(bug) = self.world.get_bug_mut(bug_id) {
-            bug.current_state.weight -= COST_SLEEP;
+            bug.current_state.weight -= cost;
             bug.current_state.action = ACT_SLEEP;
+        }
+
+        // Sleep now becomes sleep/drink (from bugs.c 0.26+)
+        if current_hydrate < max_hydrate {
+            if let Some(cell) = self.world.get_cell_mut(pos) {
+                if cell.water > 0 {
+                    // Try to drink it all
+                    let new_hydrate = current_hydrate + cell.water;
+                    if new_hydrate > max_hydrate {
+                        // Over full, give some back
+                        if let Some(bug) = self.world.get_bug_mut(bug_id) {
+                            bug.current_state.hydrate = max_hydrate;
+                        }
+                        if let Some(cell) = self.world.get_cell_mut(pos) {
+                            cell.water = new_hydrate - max_hydrate;
+                        }
+                    } else {
+                        // Drink all available water
+                        if let Some(bug) = self.world.get_bug_mut(bug_id) {
+                            bug.current_state.hydrate = new_hydrate;
+                        }
+                        if let Some(cell) = self.world.get_cell_mut(pos) {
+                            cell.water = 0;
+                        }
+                    }
+                }
+            }
         }
     }
 
     fn action_eat(&mut self, bug_id: u64) {
-        let bug_pos = self.world.get_bug(bug_id).map(|b| b.current_state.pos);
-        if let Some(pos) = bug_pos {
-            let food_available = self
-                .world
-                .get_cell(pos)
-                .map(|c| c.food)
-                .unwrap_or(0)
-                .min(100);
+        let (pos, weight) = {
+            let bug = match self.world.get_bug(bug_id) {
+                Some(b) => b,
+                None => return,
+            };
+            (bug.current_state.pos, bug.current_state.weight)
+        };
 
-            if let Some(cell) = self.world.get_cell_mut(pos) {
-                cell.food -= food_available;
-            }
+        // Limit food intake to EAT_LIMIT% of body weight
+        let max_intake = (weight * EAT_LIMIT) / 1024;
+        let food_available = self.world.get_cell(pos).map(|c| c.food).unwrap_or(0);
 
-            if let Some(bug) = self.world.get_bug_mut(bug_id) {
-                bug.current_state.weight += food_available;
-                bug.data.food_consumed += food_available;
-                bug.current_state.action = ACT_EAT;
-            }
+        let actual_intake = food_available.min(max_intake);
+
+        // Penalty for overeating
+        let penalty = if food_available > max_intake {
+            food_available - max_intake
+        } else {
+            0
+        };
+
+        // Consume the food
+        if let Some(cell) = self.world.get_cell_mut(pos) {
+            cell.food -= actual_intake;
+            // Soil spew - eating reduces elevation at this location
+            cell.terrain_height -= 1;
+        }
+
+        // Soil spew - increase elevation at random location
+        let rx = self.rng.gen_range(WORLD_X as u32) as i32;
+        let ry = self.rng.gen_range(WORLD_Y as u32) as i32;
+        if let Some(cell) = self.world.get_cell_mut(Pos::new(rx, ry)) {
+            cell.terrain_height += 1;
+        }
+
+        // Update bug weight first
+        if let Some(bug) = self.world.get_bug_mut(bug_id) {
+            bug.current_state.weight += actual_intake - penalty;
+            bug.data.food_consumed += actual_intake;
+        }
+
+        // Calculate cost based on new weight
+        let new_weight = self.world.get_bug(bug_id).map(|b| b.current_state.weight).unwrap_or(0);
+        let cost = self.cost_calc(COST_EAT, new_weight);
+
+        // Apply cost
+        if let Some(bug) = self.world.get_bug_mut(bug_id) {
+            bug.current_state.weight -= cost;
+            bug.current_state.action = ACT_EAT;
         }
     }
 
     fn action_turn(&mut self, bug_id: u64, direction: i8) {
+        let (pos, weight) = {
+            let bug = match self.world.get_bug(bug_id) {
+                Some(b) => b,
+                None => return,
+            };
+            (bug.current_state.pos, bug.current_state.weight)
+        };
+
+        // Terrain manipulation - turning digs
+        if let Some(cell) = self.world.get_cell_mut(pos) {
+            cell.terrain_height -= 1;
+        }
+
+        let rx = self.rng.gen_range(WORLD_X as u32) as i32;
+        let ry = self.rng.gen_range(WORLD_Y as u32) as i32;
+        if let Some(cell) = self.world.get_cell_mut(Pos::new(rx, ry)) {
+            cell.terrain_height += 1;
+        }
+
+        // Calculate cost before borrowing
+        let cost = self.cost_calc(COST_TURN, weight);
+
+        // Update bug
         if let Some(bug) = self.world.get_bug_mut(bug_id) {
             bug.current_state.facing = (bug.current_state.facing + direction + 6) % 6 - 2;
-            bug.current_state.weight -= COST_TURN;
+            bug.current_state.weight -= cost;
             bug.current_state.action = if direction > 0 {
                 ACT_TURN_CW
             } else {
@@ -464,23 +562,158 @@ impl Simulation {
     }
 
     fn action_move(&mut self, bug_id: u64) {
-        let (pos, facing) = {
+        let (pos, facing, weight, kills) = {
             let bug = match self.world.get_bug(bug_id) {
                 Some(b) => b,
                 None => return,
             };
-            (bug.current_state.pos, bug.current_state.facing)
+            (bug.current_state.pos, bug.current_state.facing, bug.current_state.weight, bug.data.kills)
         };
 
-        let new_pos = pos.step(facing);
+        // Terrain manipulation - moving digs
+        if let Some(cell) = self.world.get_cell_mut(pos) {
+            cell.terrain_height -= 1;
+        }
 
-        if self.world.move_bug(bug_id, new_pos) {
-            if let Some(bug) = self.world.get_bug_mut(bug_id) {
-                bug.current_state.weight -= COST_MOVE;
-                bug.data.moves += 1;
-                bug.current_state.action = ACT_MOVE;
-                bug.record_position();
-                self.movements_this_tick += 1;
+        let rx = self.rng.gen_range(WORLD_X as u32) as i32;
+        let ry = self.rng.gen_range(WORLD_Y as u32) as i32;
+        if let Some(cell) = self.world.get_cell_mut(Pos::new(rx, ry)) {
+            cell.terrain_height += 1;
+        }
+
+        let new_pos = pos.step(facing);
+        let defender_id = self.world.bug_positions.get(&(new_pos.x, new_pos.y)).copied();
+
+        // Pay for the move
+        let cost = self.cost_calc(COST_MOVE, weight);
+        if let Some(bug) = self.world.get_bug_mut(bug_id) {
+            bug.current_state.weight -= cost;
+            if bug.current_state.weight < 0 {
+                bug.current_state.weight = 0;
+            }
+        }
+
+        // Check if destination is occupied
+        if let Some(defender_id) = defender_id {
+            // There's a defender - fight!
+            if self.safety > 0 {
+                // Safety is on, no kills
+                return;
+            }
+
+            self.collisions_this_tick += 1;
+
+            // Get defender info
+            let (def_weight, def_facing, def_defends) = {
+                let defender = match self.world.get_bug(defender_id) {
+                    Some(b) => b,
+                    None => return,
+                };
+                (defender.current_state.weight, defender.current_state.facing, defender.data.defends)
+            };
+
+            // Determine relative facing
+            let mut rel_facing = def_facing - facing;
+            while rel_facing < -2 {
+                rel_facing += 6;
+            }
+            while rel_facing > 3 {
+                rel_facing -= 6;
+            }
+
+            // Calculate defender's effective mass based on facing and experience
+            let mut def_mass = def_weight;
+            let def_defends_i32 = def_defends as i32;
+            match rel_facing {
+                0 => {
+                    // Head on - advantage to defender
+                    def_mass = (def_mass * ((def_defends_i32 / 2) + 1)) / 128;
+                }
+                1 | -1 => {
+                    // Oblique from front
+                    def_mass = (def_mass * ((def_defends_i32 / 4) + 1)) / 1024;
+                }
+                2 | -2 => {
+                    // Oblique from rear - advantage to attacker
+                    def_mass = (def_mass * ((def_defends_i32 / 8) + 1)) / 8192;
+                    def_mass -= kills as i32;
+                }
+                3 => {
+                    // From the rear - BIG advantage to attacker
+                    def_mass /= 65536;
+                    def_mass -= (kills * kills) as i32;
+                }
+                _ => {}
+            }
+
+            if def_mass < 0 {
+                def_mass = 0;
+            }
+
+            // Random roll to determine winner
+            let total = def_mass + (weight / 1024);
+            let roll = self.rng.gen_range(total as u32) as i32;
+
+            if roll > def_mass {
+                // Attacker wins!
+                if let Some(bug) = self.world.get_bug_mut(bug_id) {
+                    bug.data.kills += 1;
+                }
+
+                // Defender becomes food
+                if let Some(cell) = self.world.get_cell_mut(new_pos) {
+                    cell.food += def_weight;
+                }
+
+                // Kill defender
+                self.world.remove_bug(defender_id);
+
+                // Move attacker in
+                if self.world.move_bug(bug_id, new_pos) {
+                    // Get weight before calculating cost
+                    let current_weight = self.world.get_bug(bug_id).map(|b| b.current_state.weight).unwrap_or(0);
+                    let fight_cost = self.cost_calc(COST_FIGHT, current_weight);
+
+                    if let Some(bug) = self.world.get_bug_mut(bug_id) {
+                        bug.current_state.weight -= fight_cost;
+                        bug.data.moves += 1;
+                        bug.current_state.action = ACT_MOVE;
+                        bug.record_position();
+                        self.movements_this_tick += 1;
+                    }
+                }
+            } else {
+                // Defender wins!
+                if let Some(defender) = self.world.get_bug_mut(defender_id) {
+                    defender.data.defends += 1;
+                    // Shift defender history
+                    for i in (1..POS_HISTORY).rev() {
+                        if i < defender.position_history.len() {
+                            defender.position_history[i] = defender.position_history[i - 1].clone();
+                        }
+                    }
+                    if !defender.position_history.is_empty() {
+                        defender.position_history[0].action = ACT_DEFEND;
+                    }
+                }
+
+                // Attacker becomes food
+                if let Some(cell) = self.world.get_cell_mut(new_pos) {
+                    cell.food += weight;
+                }
+
+                // Kill attacker
+                self.world.remove_bug(bug_id);
+            }
+        } else {
+            // No defender, just move
+            if self.world.move_bug(bug_id, new_pos) {
+                if let Some(bug) = self.world.get_bug_mut(bug_id) {
+                    bug.data.moves += 1;
+                    bug.current_state.action = ACT_MOVE;
+                    bug.record_position();
+                    self.movements_this_tick += 1;
+                }
             }
         }
     }

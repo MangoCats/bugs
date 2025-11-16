@@ -170,6 +170,7 @@ pub struct BugData {
     pub mate_reject: u32,
     pub children: u32,
     pub food_consumed: i32,
+    pub underwater: i32,  // Number of turns underwater (for drowning)
 }
 
 impl Default for BugData {
@@ -183,6 +184,7 @@ impl Default for BugData {
             mate_reject: 0,
             children: 0,
             food_consumed: 0,
+            underwater: 0,
         }
     }
 }
