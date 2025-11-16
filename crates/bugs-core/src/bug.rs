@@ -205,8 +205,8 @@ impl Bug {
             pos,
             facing: DIR_E,
             action: ACT_SLEEP,
-            weight: 1024 * 10, // Start with weight of 10
-            hydrate: 10,
+            weight: DIE_THIN * 256, // Fat, happy, ready to make children (matches C version)
+            hydrate: DIE_THIN / 4,   // Well hydrated
         };
 
         let mut bug = Self {
