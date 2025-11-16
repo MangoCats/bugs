@@ -272,6 +272,11 @@ impl GraphRenderer {
         }
     }
 
+    /// Get current scroll offset
+    pub fn get_offset(&self) -> usize {
+        self.view_offset
+    }
+
     /// Render time-series graphs to RGBA buffer
     pub fn render_to_rgba(&self, stats_history: &VecDeque<WorldStats>, buffer: &mut [u8]) {
         assert_eq!(buffer.len(), self.width * self.height * 4);

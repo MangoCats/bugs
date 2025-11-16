@@ -2,77 +2,252 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Bugs Viewer (Web)</title>
+    <title>Bugs Viewer (WebAssembly)</title>
     <style>
         body {
             margin: 0;
             padding: 20px;
-            font-family: Arial, sans-serif;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: #1a1a1a;
             color: #fff;
         }
         #container {
-            max-width: 1800px;
+            max-width: 1900px;
             margin: 0 auto;
         }
         h1 {
-            margin-bottom: 20px;
+            margin-bottom: 10px;
+            font-size: 28px;
         }
-        #canvas {
-            border: 2px solid #444;
-            display: block;
-            margin: 20px 0;
+        .subtitle {
+            color: #888;
+            margin-bottom: 20px;
+            font-size: 14px;
         }
         #controls {
             background: #2a2a2a;
-            padding: 20px;
-            border-radius: 5px;
-            margin-bottom: 20px;
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .control-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .control-group label {
+            font-size: 13px;
+            color: #aaa;
         }
         button {
             background: #4CAF50;
             border: none;
             color: white;
-            padding: 10px 20px;
-            margin: 5px;
+            padding: 8px 16px;
+            margin: 0;
             cursor: pointer;
-            border-radius: 3px;
+            border-radius: 4px;
+            font-size: 13px;
+            transition: background 0.2s;
         }
         button:hover {
             background: #45a049;
         }
-        #stats {
+        button:active {
+            background: #3d8b40;
+        }
+        .view-section {
             background: #2a2a2a;
             padding: 15px;
-            border-radius: 5px;
-            font-family: monospace;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+        .section-title {
+            font-size: 14px;
+            color: #aaa;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        canvas {
+            border: 2px solid #444;
+            display: block;
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+        #mainCanvas {
+            width: 1840px;
+            height: 1000px;
+        }
+        #graphCanvas {
+            width: 1840px;
+            height: 80px;
+            margin-top: 5px;
+        }
+        #stats {
+            background: #2a2a2a;
+            padding: 15px 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .stats-row {
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1px solid #333;
+            padding: 5px 0;
+        }
+        .stats-row:last-child {
+            border-bottom: none;
+        }
+        .stats-label {
+            color: #888;
+        }
+        .stats-value {
+            color: #4CAF50;
+            font-weight: bold;
+        }
+        #graphControls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 10px;
+        }
+        #graphControls button {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+        .legend {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+            font-size: 11px;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .legend-color {
+            width: 20px;
+            height: 12px;
+            border: 1px solid #555;
+        }
+        .info-box {
+            background: #1a3a1a;
+            border-left: 4px solid #4CAF50;
+            padding: 12px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+            font-size: 13px;
         }
     </style>
 </head>
 <body>
     <div id="container">
-        <h1>Bugs Evolution Viewer (WebAssembly)</h1>
+        <h1>🐛 Bugs Evolution Viewer</h1>
+        <div class="subtitle">WebAssembly-powered replay viewer with interactive graphs</div>
 
-        <div id="controls">
-            <button id="bugMapBtn">Bug Map</button>
-            <button id="envMapBtn">Environment Map</button>
+        <div class="info-box">
+            ℹ️ This is a replay viewer. Load a simulation recording to view bug evolution with real-time statistics and scrollable graphs.
         </div>
 
-        <canvas id="canvas"></canvas>
+        <div id="controls">
+            <div class="control-group">
+                <label>View Mode:</label>
+                <button id="bugMapBtn">Bug Map</button>
+                <button id="envMapBtn">Environment</button>
+            </div>
+            <div class="control-group">
+                <label>|</label>
+                <button id="loadBtn">📂 Load Recording</button>
+            </div>
+        </div>
+
+        <div class="view-section">
+            <div class="section-title">Main World View (1840×1000) - LEFTBAR + Simulation</div>
+            <canvas id="mainCanvas" width="1840" height="1000"></canvas>
+        </div>
+
+        <div class="view-section">
+            <div class="section-title">Time-Series Graphs (1840×80) - Scrollable History</div>
+            <canvas id="graphCanvas" width="1840" height="80"></canvas>
+
+            <div id="graphControls">
+                <button id="graphBackBtn">◀◀ -100</button>
+                <button id="graphBack10Btn">◀ -10</button>
+                <button id="graphResetBtn">● Live</button>
+                <button id="graphFwd10Btn">+10 ▶</button>
+                <button id="graphFwd100Btn">+100 ▶▶</button>
+                <span id="graphInfo" style="margin-left: 15px; color: #888; font-size: 12px;">Offset: 0</span>
+            </div>
+
+            <div class="legend">
+                <div class="legend-item">
+                    <div class="legend-color" style="background: white;"></div>
+                    <span>Population</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: gray;"></div>
+                    <span>Avg Genes</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: rgb(0,255,0);"></div>
+                    <span>Food/Cell</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: rgb(0,0,255);"></div>
+                    <span>Bug Mass</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: rgb(0,255,128);"></div>
+                    <span>Movement</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: rgb(0,128,0);"></div>
+                    <span>Starvation</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: rgb(64,0,192);"></div>
+                    <span>Drowning</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: rgb(255,0,0);"></div>
+                    <span>Collision</span>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background: rgb(255,0,255);"></div>
+                    <span>Births</span>
+                </div>
+            </div>
+        </div>
 
         <div id="stats">
-            <div>Loading...</div>
+            <div class="stats-row">
+                <span class="stats-label">Status:</span>
+                <span class="stats-value">No simulation loaded</span>
+            </div>
         </div>
     </div>
 
     <script type="module">
         import init, { WebViewer } from './pkg/bugs_viewer_web.js';
 
+        let viewer = null;
+        let graphOffset = 0;
+
         async function run() {
             await init();
 
-            const viewer = new WebViewer('canvas');
+            viewer = new WebViewer('mainCanvas', 'graphCanvas');
 
+            // View mode buttons
             document.getElementById('bugMapBtn').addEventListener('click', () => {
                 viewer.set_mode(true);
                 viewer.render();
@@ -83,23 +258,90 @@
                 viewer.render();
             });
 
+            // Graph controls
+            document.getElementById('graphBackBtn').addEventListener('click', () => {
+                viewer.scroll_graph(-100);
+                graphOffset += 100;
+                updateGraphInfo();
+                viewer.render();
+            });
+
+            document.getElementById('graphBack10Btn').addEventListener('click', () => {
+                viewer.scroll_graph(-10);
+                graphOffset += 10;
+                updateGraphInfo();
+                viewer.render();
+            });
+
+            document.getElementById('graphResetBtn').addEventListener('click', () => {
+                viewer.set_graph_offset(0);
+                graphOffset = 0;
+                updateGraphInfo();
+                viewer.render();
+            });
+
+            document.getElementById('graphFwd10Btn').addEventListener('click', () => {
+                viewer.scroll_graph(10);
+                graphOffset -= 10;
+                if (graphOffset < 0) graphOffset = 0;
+                updateGraphInfo();
+                viewer.render();
+            });
+
+            document.getElementById('graphFwd100Btn').addEventListener('click', () => {
+                viewer.scroll_graph(100);
+                graphOffset -= 100;
+                if (graphOffset < 0) graphOffset = 0;
+                updateGraphInfo();
+                viewer.render();
+            });
+
             // Initial render
             viewer.render();
 
-            // Update stats
+            // Update stats display
             function updateStats() {
-                const stats = viewer.get_stats();
-                if (stats) {
-                    document.getElementById('stats').innerHTML = `
-                        <div>Tick: ${stats.tick}</div>
-                        <div>Bugs: ${stats.bug_count}</div>
-                        <div>Avg Mass: ${stats.avg_bug_mass}</div>
-                        <div>Avg Genes: ${stats.avg_genes.toFixed(2)}</div>
-                    `;
+                try {
+                    const statsJson = viewer.get_stats();
+                    const stats = JSON.parse(statsJson);
+
+                    if (stats.tick !== undefined) {
+                        const statsDiv = document.getElementById('stats');
+                        statsDiv.innerHTML = `
+                            <div class="stats-row">
+                                <span class="stats-label">Tick:</span>
+                                <span class="stats-value">${stats.tick}</span>
+                            </div>
+                            <div class="stats-row">
+                                <span class="stats-label">Bug Count:</span>
+                                <span class="stats-value">${stats.bug_count}</span>
+                            </div>
+                            <div class="stats-row">
+                                <span class="stats-label">Avg Mass:</span>
+                                <span class="stats-value">${stats.avg_mass}</span>
+                            </div>
+                            <div class="stats-row">
+                                <span class="stats-label">Avg Genes:</span>
+                                <span class="stats-value">${stats.avg_genes}</span>
+                            </div>
+                            <div class="stats-row">
+                                <span class="stats-label">Stats History:</span>
+                                <span class="stats-value">${viewer.get_stats_count()} ticks</span>
+                            </div>
+                        `;
+                    }
+                } catch (e) {
+                    // Ignore errors
                 }
             }
 
+            function updateGraphInfo() {
+                document.getElementById('graphInfo').textContent =
+                    `Offset: ${graphOffset} ticks (${graphOffset > 0 ? graphOffset + ' ticks ago' : 'live'})`;
+            }
+
             setInterval(updateStats, 100);
+            setInterval(() => viewer.render(), 50); // 20 FPS
         }
 
         run();

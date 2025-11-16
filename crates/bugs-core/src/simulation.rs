@@ -83,9 +83,8 @@ impl Simulation {
             for y in 0..WORLD_Y {
                 let pos = Pos::new(x as i32, y as i32);
                 if let Some(cell) = self.world.get_cell_mut(pos) {
-                    // Simple terrain - can be made more complex
                     cell.food = FOOD_START;
-                    cell.water = 0;
+                    cell.water = INIT_DEPTH;  // Initial water depth
                     cell.terrain_height = 0;
                 }
             }
@@ -204,6 +203,9 @@ impl Simulation {
 
         // Process all bugs
         self.process_bugs();
+
+        // Check for drowning and starvation
+        self.check_deaths();
 
         // Grow food
         self.grow_food();
@@ -339,6 +341,48 @@ impl Simulation {
         }
     }
 
+    /// Check for drowning deaths
+    fn check_deaths(&mut self) {
+        let mut dead_bugs = Vec::new();
+
+        // Get all bug IDs
+        let bug_ids: Vec<u64> = self.world.bugs.keys().copied().collect();
+
+        for bug_id in bug_ids {
+            if let Some(bug) = self.world.get_bug(bug_id) {
+                let pos = bug.current_state.pos;
+
+                // Check if underwater
+                if let Some(cell) = self.world.get_cell(pos) {
+                    if cell.water > DROWN_DEPTH {
+                        // Bug is underwater
+                        let underwater = bug.data.underwater;
+                        if underwater >= DROWN_TIME {
+                            // Drown!
+                            dead_bugs.push(bug_id);
+                            self.drownings_this_tick += 1;
+                        } else {
+                            // Increment underwater counter
+                            if let Some(bug_mut) = self.world.get_bug_mut(bug_id) {
+                                bug_mut.data.underwater += 1;
+                            }
+                        }
+                    } else {
+                        // Not underwater, reset counter
+                        if let Some(bug_mut) = self.world.get_bug_mut(bug_id) {
+                            bug_mut.data.underwater = 0;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Kill drowned bugs
+        for bug_id in dead_bugs {
+            self.world.remove_bug(bug_id);
+        }
+    }
+
     /// Process one bug's decision and action
     fn process_single_bug(&mut self, bug_id: u64) {
         // Gather senses
@@ -408,6 +452,25 @@ impl Simulation {
         senses
     }
 
+    /// Calculate energy cost based on mass and gene count
+    /// Costs are prorated according to COST * effective_mass / NOMMASS
+    /// effective_mass = abs(weight) + (GENECOST * ngenes^3) / (GENEKNEE^2)
+    fn cost_calc(&self, base_cost: i32, bug_id: u64) -> i32 {
+        let Some(bug) = self.world.get_bug(bug_id) else {
+            return 0;
+        };
+
+        let weight = bug.current_state.weight.abs();
+        let ngenes = bug.brain.n_genes as i32;
+        let geneknee2 = GENE_KNEE * GENE_KNEE;
+
+        // Gene cost adds to effective mass (non-linear beyond GENE_KNEE)
+        let gene_cost = (GENE_COST * ngenes * ngenes * ngenes) / geneknee2;
+        let effective_mass = weight + gene_cost;
+
+        (base_cost * effective_mass) / NOMMASS
+    }
+
     /// Execute a bug action
     fn execute_action(&mut self, bug_id: u64, action: usize) {
         match action {
@@ -423,38 +486,130 @@ impl Simulation {
     }
 
     fn action_sleep(&mut self, bug_id: u64) {
+        let (pos, weight, current_hydrate) = {
+            let bug = match self.world.get_bug(bug_id) {
+                Some(b) => b,
+                None => return,
+            };
+            (bug.current_state.pos, bug.current_state.weight, bug.current_state.hydrate)
+        };
+
+        // Calculate cost and max hydrate before borrowing
+        let cost = self.cost_calc(COST_SLEEP, bug_id);
+        let max_hydrate = weight / 1024;
+
         if let Some(bug) = self.world.get_bug_mut(bug_id) {
-            bug.current_state.weight -= COST_SLEEP;
+            bug.current_state.weight -= cost;
             bug.current_state.action = ACT_SLEEP;
+        }
+
+        // Sleep now becomes sleep/drink (from bugs.c 0.26+)
+        if current_hydrate < max_hydrate {
+            if let Some(cell) = self.world.get_cell_mut(pos) {
+                if cell.water > 0 {
+                    // Try to drink it all
+                    let new_hydrate = current_hydrate + cell.water;
+                    if new_hydrate > max_hydrate {
+                        // Over full, give some back
+                        if let Some(bug) = self.world.get_bug_mut(bug_id) {
+                            bug.current_state.hydrate = max_hydrate;
+                        }
+                        if let Some(cell) = self.world.get_cell_mut(pos) {
+                            cell.water = new_hydrate - max_hydrate;
+                        }
+                    } else {
+                        // Drink all available water
+                        if let Some(bug) = self.world.get_bug_mut(bug_id) {
+                            bug.current_state.hydrate = new_hydrate;
+                        }
+                        if let Some(cell) = self.world.get_cell_mut(pos) {
+                            cell.water = 0;
+                        }
+                    }
+                }
+            }
         }
     }
 
     fn action_eat(&mut self, bug_id: u64) {
-        let bug_pos = self.world.get_bug(bug_id).map(|b| b.current_state.pos);
-        if let Some(pos) = bug_pos {
-            let food_available = self
-                .world
-                .get_cell(pos)
-                .map(|c| c.food)
-                .unwrap_or(0)
-                .min(100);
+        let (pos, weight) = {
+            let bug = match self.world.get_bug(bug_id) {
+                Some(b) => b,
+                None => return,
+            };
+            (bug.current_state.pos, bug.current_state.weight)
+        };
 
-            if let Some(cell) = self.world.get_cell_mut(pos) {
-                cell.food -= food_available;
-            }
+        // Limit food intake to EAT_LIMIT% of body weight
+        let max_intake = (weight * EAT_LIMIT) / 1024;
+        let food_available = self.world.get_cell(pos).map(|c| c.food).unwrap_or(0);
 
-            if let Some(bug) = self.world.get_bug_mut(bug_id) {
-                bug.current_state.weight += food_available;
-                bug.data.food_consumed += food_available;
-                bug.current_state.action = ACT_EAT;
-            }
+        let actual_intake = food_available.min(max_intake);
+
+        // Penalty for overeating
+        let penalty = if food_available > max_intake {
+            food_available - max_intake
+        } else {
+            0
+        };
+
+        // Consume the food
+        if let Some(cell) = self.world.get_cell_mut(pos) {
+            cell.food -= actual_intake;
+            // Soil spew - eating reduces elevation at this location
+            cell.terrain_height -= 1;
+        }
+
+        // Soil spew - increase elevation at random location
+        let rx = self.rng.gen_range(WORLD_X as u32) as i32;
+        let ry = self.rng.gen_range(WORLD_Y as u32) as i32;
+        if let Some(cell) = self.world.get_cell_mut(Pos::new(rx, ry)) {
+            cell.terrain_height += 1;
+        }
+
+        // Update bug weight first
+        if let Some(bug) = self.world.get_bug_mut(bug_id) {
+            bug.current_state.weight += actual_intake - penalty;
+            bug.data.food_consumed += actual_intake;
+        }
+
+        // Calculate cost based on new weight and genes
+        let cost = self.cost_calc(COST_EAT, bug_id);
+
+        // Apply cost
+        if let Some(bug) = self.world.get_bug_mut(bug_id) {
+            bug.current_state.weight -= cost;
+            bug.current_state.action = ACT_EAT;
         }
     }
 
     fn action_turn(&mut self, bug_id: u64, direction: i8) {
+        let pos = {
+            let bug = match self.world.get_bug(bug_id) {
+                Some(b) => b,
+                None => return,
+            };
+            bug.current_state.pos
+        };
+
+        // Terrain manipulation - turning digs
+        if let Some(cell) = self.world.get_cell_mut(pos) {
+            cell.terrain_height -= 1;
+        }
+
+        let rx = self.rng.gen_range(WORLD_X as u32) as i32;
+        let ry = self.rng.gen_range(WORLD_Y as u32) as i32;
+        if let Some(cell) = self.world.get_cell_mut(Pos::new(rx, ry)) {
+            cell.terrain_height += 1;
+        }
+
+        // Calculate cost before borrowing
+        let cost = self.cost_calc(COST_TURN, bug_id);
+
+        // Update bug
         if let Some(bug) = self.world.get_bug_mut(bug_id) {
             bug.current_state.facing = (bug.current_state.facing + direction + 6) % 6 - 2;
-            bug.current_state.weight -= COST_TURN;
+            bug.current_state.weight -= cost;
             bug.current_state.action = if direction > 0 {
                 ACT_TURN_CW
             } else {
@@ -464,23 +619,157 @@ impl Simulation {
     }
 
     fn action_move(&mut self, bug_id: u64) {
-        let (pos, facing) = {
+        let (pos, facing, weight, kills) = {
             let bug = match self.world.get_bug(bug_id) {
                 Some(b) => b,
                 None => return,
             };
-            (bug.current_state.pos, bug.current_state.facing)
+            (bug.current_state.pos, bug.current_state.facing, bug.current_state.weight, bug.data.kills)
         };
 
-        let new_pos = pos.step(facing);
+        // Terrain manipulation - moving digs
+        if let Some(cell) = self.world.get_cell_mut(pos) {
+            cell.terrain_height -= 1;
+        }
 
-        if self.world.move_bug(bug_id, new_pos) {
-            if let Some(bug) = self.world.get_bug_mut(bug_id) {
-                bug.current_state.weight -= COST_MOVE;
-                bug.data.moves += 1;
-                bug.current_state.action = ACT_MOVE;
-                bug.record_position();
-                self.movements_this_tick += 1;
+        let rx = self.rng.gen_range(WORLD_X as u32) as i32;
+        let ry = self.rng.gen_range(WORLD_Y as u32) as i32;
+        if let Some(cell) = self.world.get_cell_mut(Pos::new(rx, ry)) {
+            cell.terrain_height += 1;
+        }
+
+        let new_pos = pos.step(facing);
+        let defender_id = self.world.bug_positions.get(&(new_pos.x, new_pos.y)).copied();
+
+        // Pay for the move
+        let cost = self.cost_calc(COST_MOVE, bug_id);
+        if let Some(bug) = self.world.get_bug_mut(bug_id) {
+            bug.current_state.weight -= cost;
+            if bug.current_state.weight < 0 {
+                bug.current_state.weight = 0;
+            }
+        }
+
+        // Check if destination is occupied
+        if let Some(defender_id) = defender_id {
+            // There's a defender - fight!
+            if self.safety > 0 {
+                // Safety is on, no kills
+                return;
+            }
+
+            self.collisions_this_tick += 1;
+
+            // Get defender info
+            let (def_weight, def_facing, def_defends) = {
+                let defender = match self.world.get_bug(defender_id) {
+                    Some(b) => b,
+                    None => return,
+                };
+                (defender.current_state.weight, defender.current_state.facing, defender.data.defends)
+            };
+
+            // Determine relative facing
+            let mut rel_facing = def_facing - facing;
+            while rel_facing < -2 {
+                rel_facing += 6;
+            }
+            while rel_facing > 3 {
+                rel_facing -= 6;
+            }
+
+            // Calculate defender's effective mass based on facing and experience
+            let mut def_mass = def_weight;
+            let def_defends_i32 = def_defends as i32;
+            match rel_facing {
+                0 => {
+                    // Head on - advantage to defender
+                    def_mass = (def_mass * ((def_defends_i32 / 2) + 1)) / 128;
+                }
+                1 | -1 => {
+                    // Oblique from front
+                    def_mass = (def_mass * ((def_defends_i32 / 4) + 1)) / 1024;
+                }
+                2 | -2 => {
+                    // Oblique from rear - advantage to attacker
+                    def_mass = (def_mass * ((def_defends_i32 / 8) + 1)) / 8192;
+                    def_mass -= kills as i32;
+                }
+                3 => {
+                    // From the rear - BIG advantage to attacker
+                    def_mass /= 65536;
+                    def_mass -= (kills * kills) as i32;
+                }
+                _ => {}
+            }
+
+            if def_mass < 0 {
+                def_mass = 0;
+            }
+
+            // Random roll to determine winner
+            let total = def_mass + (weight / 1024);
+            let roll = self.rng.gen_range(total as u32) as i32;
+
+            if roll > def_mass {
+                // Attacker wins!
+                if let Some(bug) = self.world.get_bug_mut(bug_id) {
+                    bug.data.kills += 1;
+                }
+
+                // Defender becomes food
+                if let Some(cell) = self.world.get_cell_mut(new_pos) {
+                    cell.food += def_weight;
+                }
+
+                // Kill defender
+                self.world.remove_bug(defender_id);
+
+                // Move attacker in
+                if self.world.move_bug(bug_id, new_pos) {
+                    // Calculate fight cost including gene penalty
+                    let fight_cost = self.cost_calc(COST_FIGHT, bug_id);
+
+                    if let Some(bug) = self.world.get_bug_mut(bug_id) {
+                        bug.current_state.weight -= fight_cost;
+                        bug.data.moves += 1;
+                        bug.current_state.action = ACT_MOVE;
+                        bug.record_position();
+                        self.movements_this_tick += 1;
+                    }
+                }
+            } else {
+                // Defender wins!
+                if let Some(defender) = self.world.get_bug_mut(defender_id) {
+                    defender.data.defends += 1;
+                    // Shift defender history
+                    for i in (1..POS_HISTORY).rev() {
+                        if i < defender.position_history.len() {
+                            defender.position_history[i] = defender.position_history[i - 1].clone();
+                        }
+                    }
+                    if !defender.position_history.is_empty() {
+                        defender.position_history[0].action = ACT_DEFEND;
+                    }
+                }
+
+                // Attacker becomes food
+                if let Some(cell) = self.world.get_cell_mut(new_pos) {
+                    cell.food += weight;
+                }
+
+                // Kill attacker
+                self.world.remove_bug(bug_id);
+            }
+        } else {
+            // No defender, just move
+            if self.world.move_bug(bug_id, new_pos) {
+                if let Some(bug) = self.world.get_bug_mut(bug_id) {
+                    bug.data.moves += 1;
+                    bug.current_state.action = ACT_MOVE;
+                    bug.record_position();
+                    self.movements_this_tick += 1;
+                }
             }
         }
     }
@@ -754,19 +1043,241 @@ impl Simulation {
     }
 
     /// Grow food in all cells
+    /// Calculate seasonal growth factor for a cell
+    /// Based on position and current time (creates moving seasonal zones)
+    fn growing_season(&self, x: usize, y: usize) -> i32 {
+        use std::f64::consts::PI;
+
+        // Seasonally adjusted X - creates sweeping seasonal zones
+        let sax = ((x as i32 + (self.world.current_tick * WORLD_X as i32) / SEASON_LENGTH) as usize) % WORLD_X;
+
+        // Food growth factor with cosine terrain
+        let fgf = 0.1 + self.food_hump *
+            ((PI * (sax as f64)) / (WORLD_X as f64)).sin() *
+            (0.51 - (PI * 6.0 * (y as f64) / (WORLD_Y as f64)).cos() * 0.5);
+
+        ((FOOD_GROW as f64 - 1024.0) * fgf + 1024.0) as i32
+    }
+
+    /// Grow food across the world
     fn grow_food(&mut self) {
+        // Rot values - food decay rates around bugs
+        const ROT: [i32; 4] = [
+            988,   // .966 @ 10, .342 @ 30 - Go easy on the bug itself
+            973,   // Heavier rot next door
+            1012,  // Very light farther on
+            1023,  // Just a bit less than stopgrowth out here
+        ];
+
+        // Update nearest bug distances
+        self.update_nearest();
+
+        // Flow water (terrain erosion and water movement)
+        self.flow_water();
+
+        // Grow food in each cell
+        for y in 0..WORLD_Y {
+            for x in 0..WORLD_X {
+                let pos = Pos::new(x as i32, y as i32);
+                let growth_factor = self.growing_season(x, y);
+
+                // Get nearest bug distance
+                let nearest = self.world.get_cell(pos).map(|c| c.nearest).unwrap_or(-1);
+
+                // Apply growth or decay
+                if let Some(cell) = self.world.get_cell_mut(pos) {
+                    if nearest == -1 || self.leak < nearest {
+                        // No bugs nearby - grow food
+                        cell.food = (cell.food * growth_factor) / 1024;
+                    } else if (nearest as usize) < ROT.len() {
+                        // Bug nearby - decay food
+                        cell.food = (cell.food * ROT[nearest as usize]) / 1024;
+                    }
+
+                    // Decay food above FOODCAP
+                    if cell.food > FOOD_CAP {
+                        let overage = cell.food - FOOD_CAP;
+                        cell.food -= (overage * FOOD_DECAY) / 1024;
+                    }
+
+                    // Hard limit at FOODCAP * 10
+                    if cell.food > FOOD_CAP * 10 {
+                        cell.food = FOOD_CAP * 10;
+                    }
+                }
+
+                // Spread food to adjacent cells with less than 1/16 of this cell
+                let current_food = self.world.get_cell(pos).map(|c| c.food).unwrap_or(0);
+
+                for dir in -2..=3 {
+                    let neighbor_pos = pos.step(dir);
+                    let neighbor_food = self.world.get_cell(neighbor_pos).map(|c| c.food).unwrap_or(0);
+                    let neighbor_nearest = self.world.get_cell(neighbor_pos).map(|c| c.nearest).unwrap_or(-1);
+
+                    if neighbor_food < current_food / 16 {
+                        // Only spread if no bugs nearby or leak allows it
+                        if neighbor_nearest == -1 || self.leak < neighbor_nearest {
+                            let transfer = (current_food * FOOD_SPREAD) / 1024;
+
+                            if let Some(cell) = self.world.get_cell_mut(pos) {
+                                cell.food -= transfer;
+                            }
+                            if let Some(neighbor_cell) = self.world.get_cell_mut(neighbor_pos) {
+                                neighbor_cell.food += transfer;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Update nearest bug distances for all cells
+    fn update_nearest(&mut self) {
+        // Set 0 for cells with bugs, -1 for empty cells
         for x in 0..WORLD_X {
             for y in 0..WORLD_Y {
                 let pos = Pos::new(x as i32, y as i32);
-
-                // Don't grow food where bugs are (if leak is off)
-                if self.leak == 0 && self.world.get_bug_at(pos).is_some() {
-                    continue;
-                }
-
+                let has_bug = self.world.get_bug_at(pos).is_some();
                 if let Some(cell) = self.world.get_cell_mut(pos) {
-                    let growth = (FOOD_SPREAD as f64 * self.food_hump) as i32;
-                    cell.food = (cell.food + growth).min(FOOD_CAP);
+                    cell.nearest = if has_bug { 0 } else { -1 };
+                }
+            }
+        }
+
+        // Note: The C version has commented-out code for propagating distances
+        // We're keeping it simple for now - just 0 or -1
+    }
+
+    /// Flow water and erode terrain
+    fn flow_water(&mut self) {
+        // Repeat 4 times for lower viscosity
+        for _ in 0..4 {
+            for x in 0..WORLD_X {
+                for y in 0..WORLD_Y {
+                    let pos = Pos::new(x as i32, y as i32);
+
+                    // Random starting direction for Brownian flow
+                    let random_start = (self.rng.gen_range(6) as i8) - 2;
+
+                    // Check all 6 hexagonal directions
+                    for i in -2..=3 {
+                        let dir = random_start + i;
+                        let neighbor_pos = pos.step(dir);
+
+                        let (elev, water) = self.world.get_cell(pos)
+                            .map(|c| (c.terrain_height, c.water))
+                            .unwrap_or((0, 0));
+
+                        let (neighbor_elev, neighbor_water) = self.world.get_cell(neighbor_pos)
+                            .map(|c| (c.terrain_height, c.water))
+                            .unwrap_or((0, 0));
+
+                        // MAX_SLOPE erosion
+                        if neighbor_elev > elev + MAX_SLOPE {
+                            if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                cell.terrain_height -= 1;
+                            }
+                            if let Some(cell) = self.world.get_cell_mut(pos) {
+                                cell.terrain_height += 1;
+                            }
+                        }
+                        if elev > neighbor_elev + MAX_SLOPE {
+                            if let Some(cell) = self.world.get_cell_mut(pos) {
+                                cell.terrain_height -= 1;
+                            }
+                            if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                cell.terrain_height += 1;
+                            }
+                        }
+
+                        // Water flow equalization
+                        let total_water = water + neighbor_water;
+                        if total_water > 0 && (water + elev) != (neighbor_water + neighbor_elev) {
+                            let level = (water + elev + neighbor_water + neighbor_elev) / 2;
+
+                            if neighbor_elev < elev {
+                                // Flow into lower neighbor
+                                let new_neighbor_water = level - neighbor_elev;
+                                let new_water = total_water - new_neighbor_water;
+
+                                if new_neighbor_water > total_water {
+                                    // Drained completely
+                                    if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                        cell.water = total_water;
+                                        cell.terrain_height += 1; // Dry peak erosion
+                                    }
+                                    if let Some(cell) = self.world.get_cell_mut(pos) {
+                                        cell.water = 0;
+                                        cell.terrain_height -= 1;
+                                    }
+                                } else if new_neighbor_water < 0 {
+                                    if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                        cell.water = 0;
+                                    }
+                                    if let Some(cell) = self.world.get_cell_mut(pos) {
+                                        cell.water = total_water;
+                                    }
+                                } else {
+                                    // Normal flow
+                                    let flow = level - neighbor_elev - neighbor_water;
+                                    if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                        cell.water = new_neighbor_water;
+                                        // Fast flow erosion
+                                        if flow > 0 {
+                                            let erosion = flow / MAX_SLOPE;
+                                            cell.terrain_height += erosion;
+                                        }
+                                    }
+                                    if let Some(cell) = self.world.get_cell_mut(pos) {
+                                        cell.water = new_water;
+                                        if flow > 0 {
+                                            let erosion = flow / MAX_SLOPE;
+                                            cell.terrain_height -= erosion;
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Flow into current cell (reverse direction)
+                                let new_water = level - elev;
+                                let new_neighbor_water = total_water - new_water;
+
+                                if new_water > total_water {
+                                    if let Some(cell) = self.world.get_cell_mut(pos) {
+                                        cell.water = total_water;
+                                        cell.terrain_height += 1;
+                                    }
+                                    if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                        cell.water = 0;
+                                        cell.terrain_height -= 1;
+                                    }
+                                } else if new_water < 0 {
+                                    if let Some(cell) = self.world.get_cell_mut(pos) {
+                                        cell.water = 0;
+                                    }
+                                    if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                        cell.water = total_water;
+                                    }
+                                } else {
+                                    let flow = level - elev - water;
+                                    if let Some(cell) = self.world.get_cell_mut(pos) {
+                                        cell.water = new_water;
+                                        if flow > 0 {
+                                            let erosion = flow / MAX_SLOPE;
+                                            cell.terrain_height += erosion;
+                                        }
+                                    }
+                                    if let Some(cell) = self.world.get_cell_mut(neighbor_pos) {
+                                        cell.water = new_neighbor_water;
+                                        if flow > 0 {
+                                            let erosion = flow / MAX_SLOPE;
+                                            cell.terrain_height -= erosion;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
