@@ -1,0 +1,20 @@
+[package]
+name = "bugs028"
+version = "0.28.0"
+edition = "2021"
+description = "Rust reimplementation of Bugs 0.28 genetic programming simulation"
+license = "MIT"
+
+[workspace]
+
+[dependencies]
+# Image generation - pixel-perfect JPEG output matching libgd
+image = { version = "0.25", features = ["jpeg"] }
+
+# Web service
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["cors"] }
+
+# Utilities
+parking_lot = "0.12"
